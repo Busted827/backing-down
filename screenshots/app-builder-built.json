@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8081/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Backing Down",
+      "hasCanvas": true,
+      "bodyTextLen": 543,
+      "bodyTextHash": "31b1ca0e947614e06d903344e5fc6efb10b365131d1f324fdee98ae1c5e09680",
+      "bodyTextPrefix": "ONE RAMP. ONE WINNER. BACKING DOWN Race the dirt in reverse with",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Backing Down",
+      "hasCanvas": true,
+      "bodyTextLen": 543,
+      "bodyTextHash": "31b1ca0e947614e06d903344e5fc6efb10b365131d1f324fdee98ae1c5e09680",
+      "bodyTextPrefix": "ONE RAMP. ONE WINNER. BACKING DOWN Race the dirt in reverse with",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-built.json"
+}
