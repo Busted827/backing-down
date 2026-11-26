@@ -6,14 +6,18 @@ import type { Actions } from "@/game/input";
 export const HITCH = 1.9;
 export const TONGUE = 2.65;
 
-/** Dirt trailer assist. The lot does not get any of this. */
-export const DIRT_JACK_BASE = 0.12; // rad/s the bend can drift with the wheel centered
-export const DIRT_JACK_STEER = 1.0; // extra rad/s of bend at full lock
+/**
+ * Dirt physics. The lot does not use any of this.
+ * The truck is a bicycle model (no turning on the spot), the tongue is a real rod,
+ * and in reverse a stability assist pulls the bend toward the steady-state angle for
+ * the current wheel. Hold the wheel and the boat swings out and holds that angle
+ * through the corner. Center it and the boat comes back in line behind the truck.
+ */
+export const DIRT_WHEELBASE = 3.0;
+export const DIRT_STEER_RATE = 2.6; // rad/s the front wheels turn toward the input
+export const DIRT_STEER_SPEED = 0.06; // less lock at speed: maxLock / (1 + |v| * this)
+export const DIRT_ASSIST = 1.5; // >1 is stable in reverse; 1 is the raw unstable hinge
 export const DIRT_JACK_CAP = 1.05; // ~60°: the dirt never folds the boat
-export const DIRT_FOLLOW = 1.3; // 1/s: how fast your truck swings in behind the boat off the wheel
-// Rivals straighten up quicker. This stands in for steady hands; their steering is a
-// simple controller and it over-swings the boat at the player's setting.
-export const DIRT_FOLLOW_AI = 1.7;
 export const DIRT_WALL_DAMAGE = 0.5; // dirt walls and bales hurt half as much as the lot
 
 export type Stats = {
@@ -83,9 +87,24 @@ export type Rig = {
   failCd: number;
   recover: number;
   stuck: number;
+  wheel: number;
   stuckMark: number;
   seed: number;
 };
+
+/**
+ * Bend at the ball when towing forward on a steady arc of curvature kappa (rear-axle
+ * radius 1/kappa), with the hitch HITCH behind the axle and the trailer axle TONGUE
+ * behind the ball. Same sign as kappa.
+ */
+export function steadyJack(kappa: number) {
+  const a = Math.abs(kappa);
+  if (a < 1e-4) return 0;
+  const r = 1 / a;
+  const rh2 = r * r + HITCH * HITCH;
+  const rt = Math.sqrt(Math.max(rh2 - TONGUE * TONGUE, 0.25));
+  return Math.sign(kappa) * (Math.atan(HITCH / r) + Math.atan(TONGUE / rt));
+}
 
 export class Sim {
   track: BuiltTrack = buildTrack(TRACKS[0]);
@@ -168,6 +187,7 @@ export class Sim {
       failCd: 0,
       recover: 0,
       stuck: 0,
+      wheel: 0,
       stuckMark: 0,
       seed: slot * 1.7 + 0.4,
     };
@@ -379,9 +399,19 @@ export class Sim {
     rig.speed = clamp(rig.speed, -st.revMax, st.fwdMax);
 
     // A = steer +1 increases yaw while moving forward (nose left on the race cam).
-    const speedFactor = clamp(Math.abs(rig.speed) / 6.2, 0.45, 1);
-    const reverse = rig.speed >= 0 ? 1 : -1;
-    rig.yaw += act.steer * st.turnRate * speedFactor * reverse * dt;
+    if (this.onDirt(rig)) {
+      // Bicycle model: yaw rate comes from speed and wheel angle, so the truck
+      // carves an arc instead of spinning in place.
+      const lock = (st.turnRate * 0.26) / (1 + Math.abs(rig.speed) * DIRT_STEER_SPEED);
+      const want = act.steer * lock;
+      rig.wheel += clamp(want - rig.wheel, -DIRT_STEER_RATE * dt, DIRT_STEER_RATE * dt);
+      rig.yaw += ((rig.speed * Math.tan(rig.wheel)) / DIRT_WHEELBASE) * dt;
+    } else {
+      rig.wheel = 0;
+      const speedFactor = clamp(Math.abs(rig.speed) / 6.2, 0.45, 1);
+      const reverse = rig.speed >= 0 ? 1 : -1;
+      rig.yaw += act.steer * st.turnRate * speedFactor * reverse * dt;
+    }
 
     const fx = -Math.sin(rig.yaw);
     const fz = -Math.cos(rig.yaw);
@@ -441,16 +471,12 @@ export class Sim {
           const jack = prevJack + clamp(delta, -maxRate * dt, maxRate * dt);
           rig.trailerYaw = wrapAngle(rig.yaw - jack);
         } else {
-          // The dirt gets trailer assist. Steering still swings the boat off the ball,
-          // but the bend is capped short of a fold, and easing off the wheel lets the
-          // truck swing in behind the boat. The boat keeps the heading you gave it.
-          const maxRate = DIRT_JACK_BASE + steer * DIRT_JACK_STEER;
-          let jack = prevJack + clamp(delta, -maxRate * dt, maxRate * dt);
-          jack = clamp(jack, -DIRT_JACK_CAP, DIRT_JACK_CAP);
-          const follow = (rig.isPlayer ? DIRT_FOLLOW : DIRT_FOLLOW_AI) * (1 - steer) * clamp(Math.abs(rig.speed) / 6, 0.4, 1.4);
-          const ease = jack * (1 - Math.exp(-follow * dt));
-          jack -= ease;
-          rig.yaw = wrapAngle(rig.yaw - ease);
+          // Real rod kinematics already moved the boat this step (kinJack). Reverse on a
+          // hinge is unstable; the assist pulls the bend toward the angle this wheel
+          // would settle at if you were towing forward, which makes it stable.
+          const target = steadyJack(Math.tan(rig.wheel) / DIRT_WHEELBASE);
+          const k = 1 - Math.exp(-((DIRT_ASSIST * Math.abs(rig.speed)) / TONGUE) * dt);
+          const jack = clamp(kinJack + wrapAngle(target - kinJack) * k, -DIRT_JACK_CAP, DIRT_JACK_CAP);
           rig.trailerYaw = wrapAngle(rig.yaw - jack);
         }
       } else if (rig.speed > 0.2) {
@@ -466,6 +492,10 @@ export class Sim {
       rig.axleZ = hz - tfz * TONGUE;
     }
     rig.jack = wrapAngle(rig.yaw - rig.trailerYaw);
+  }
+
+  private onDirt(rig: Rig) {
+    return rig.progress < this.track.lot.start - 3;
   }
 
   private collideRig(rig: Rig) {

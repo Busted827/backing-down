@@ -13,7 +13,7 @@ npm run dev
 
 Open the local URL Vite prints. `npm run build` produces the production bundle.
 
-Keyboard: **S** reverse, **W** pull forward, **A** / **D** steer. On the dirt, steering swings the boat and letting go lines the truck up behind it. In the parking lot the trailer holds whatever angle you leave it at, and **W** is the only way to pull it straight.
+Keyboard: **S** reverse, **W** pull forward, **A** / **D** steer. On the dirt, holding a turn swings the boat out off the hitch and centering the wheel brings it back in line. In the parking lot the trailer holds whatever angle you leave it at, and **W** is the only way to pull it straight.
 
 ## Save
 
