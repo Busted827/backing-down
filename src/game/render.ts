@@ -33,6 +33,7 @@ export class Renderer {
   private look = new THREE.Vector3();
   private desiredPos = new THREE.Vector3();
   private desiredLook = new THREE.Vector3();
+  private courseDir = { x: 0, z: -1 };
   private lib: { wheel: THREE.CylinderGeometry; box: THREE.BoxGeometry; blob: THREE.CircleGeometry };
   private dirtTex: THREE.Texture;
   private asphaltTex: THREE.Texture;
@@ -53,7 +54,7 @@ export class Renderer {
     this.renderer.shadowMap.enabled = false;
 
     this.camera = new THREE.PerspectiveCamera(38, 1, 0.3, 420);
-    this.scene.fog = new THREE.Fog(0x9eb8c4, 95, 220);
+    this.scene.fog = new THREE.Fog(0x9eb8c4, 80, 230);
     this.scene.add(this.trackRoot, this.rigRoot);
     this.scene.add(new THREE.HemisphereLight(0xd5e6ef, 0x3d5a40, 0.85));
     const sun = new THREE.DirectionalLight(0xfff1d6, 1.35);
@@ -190,13 +191,24 @@ export class Renderer {
       this.desiredPos.set(lot.camX, lot.camY, lot.camZ);
       this.desiredLook.set(lot.lookX, 0.2, lot.lookZ);
     } else {
-      const f = forward(focus.yaw);
-      const rx = f.z;
-      const rz = -f.x;
-      this.desiredPos.set(focus.x + rx * 12 + f.x * 2, 44, focus.z + rz * 12 + f.z * 2);
-      this.desiredLook.set(focus.x - f.x * 16, 0.2, focus.z - f.z * 16);
+      // The dirt camera is framed on the course, not the truck, so it does not spin
+      // when the rig swings. It sits high, behind the rig, and off to one side,
+      // and looks down the course at the angle the lot camera uses.
+      const ahead = sim.track.sample(Math.min(lot.start, focus.progress + 10));
+      const k = snap ? 1 : 1 - Math.exp(-1.6 * dt);
+      this.courseDir.x += (ahead.dx - this.courseDir.x) * k;
+      this.courseDir.z += (ahead.dz - this.courseDir.z) * k;
+      const len = Math.hypot(this.courseDir.x, this.courseDir.z) || 1;
+      const tx = this.courseDir.x / len;
+      const tz = this.courseDir.z / len;
+      const rx = -tz;
+      const rz = tx;
+      const cx = (focus.x + focus.axleX) / 2;
+      const cz = (focus.z + focus.axleZ) / 2;
+      this.desiredPos.set(cx - tx * DIRT_CAM.back + rx * DIRT_CAM.side, DIRT_CAM.height, cz - tz * DIRT_CAM.back + rz * DIRT_CAM.side);
+      this.desiredLook.set(cx + tx * DIRT_CAM.ahead, 0.2, cz + tz * DIRT_CAM.ahead);
     }
-    const fov = inLot ? 58 : 46;
+    const fov = inLot ? 58 : DIRT_CAM.fov;
     if (snap) {
       this.camPos.copy(this.desiredPos);
       this.look.copy(this.desiredLook);
@@ -258,10 +270,10 @@ export class Renderer {
   private buildCourse(track: BuiltTrack) {
     const end = track.lot.start;
     const shoulder = this.own.mat(
-      new THREE.MeshStandardMaterial({ map: this.dirtTex, color: 0x8a6844, roughness: 1, metalness: 0, side: THREE.DoubleSide }),
+      new THREE.MeshStandardMaterial({ map: this.dirtTex, color: 0x9c8062, roughness: 1, metalness: 0, side: THREE.DoubleSide }),
     );
     const dirt = this.own.mat(
-      new THREE.MeshStandardMaterial({ map: this.dirtTex, color: 0xd7b07a, roughness: 0.94, metalness: 0, side: THREE.DoubleSide }),
+      new THREE.MeshStandardMaterial({ map: this.dirtTex, color: 0xe8cfa2, roughness: 0.94, metalness: 0, side: THREE.DoubleSide }),
     );
     const curb = this.own.mat(new THREE.MeshStandardMaterial({ color: 0xc5c1b6, roughness: 0.78, side: THREE.DoubleSide }));
     const paint = this.own.mat(new THREE.MeshBasicMaterial({ color: 0xf4efe4, side: THREE.DoubleSide }));
@@ -287,7 +299,8 @@ export class Renderer {
     const gate = this.banner(track.name.toUpperCase());
     const gs = track.sample(5);
     gate.position.set(gs.x, 3.3, gs.z);
-    gate.rotation.y = Math.atan2(gs.dx, gs.dz);
+    // Faces back up the course, toward the dirt camera, so the name reads the right way round.
+    gate.rotation.y = Math.atan2(gs.dx, gs.dz) + Math.PI;
     this.trackRoot.add(gate);
 
     this.buildLot(track);
@@ -733,9 +746,8 @@ export class Renderer {
   }
 }
 
-function forward(yaw: number) {
-  return { x: -Math.sin(yaw), z: -Math.cos(yaw) };
-}
+/** Dirt camera, in course space. Higher and off to one side, never on the roof. */
+const DIRT_CAM = { height: 54, back: 30, side: 20, ahead: 16, fov: 50 };
 
 function makeLabel(text: string, color: string) {
   const canvas = document.createElement("canvas");

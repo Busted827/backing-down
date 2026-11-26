@@ -6,6 +6,13 @@ import type { Actions } from "@/game/input";
 export const HITCH = 1.9;
 export const TONGUE = 2.65;
 
+/** Dirt trailer assist. The lot does not get any of this. */
+export const DIRT_JACK_BASE = 0.1; // rad/s the bend can drift with the wheel centered
+export const DIRT_JACK_STEER = 1.0; // extra rad/s of bend at full lock
+export const DIRT_JACK_CAP = 0.95; // ~54°: the dirt never folds the boat
+export const DIRT_FOLLOW = 1.7; // 1/s: how fast the truck swings in behind the boat off the wheel
+export const DIRT_WALL_DAMAGE = 0.5; // dirt walls and bales hurt half as much as the lot
+
 export type Stats = {
   revMax: number;
   revAccel: number;
@@ -72,6 +79,8 @@ export type Rig = {
   jackCd: number;
   failCd: number;
   recover: number;
+  stuck: number;
+  stuckMark: number;
   seed: number;
 };
 
@@ -155,6 +164,8 @@ export class Sim {
       jackCd: 0,
       failCd: 0,
       recover: 0,
+      stuck: 0,
+      stuckMark: 0,
       seed: slot * 1.7 + 0.4,
     };
   }
@@ -263,9 +274,11 @@ export class Sim {
     } else {
       const look = 12 + rig.skill * 6;
       const ahead = this.track.sample(Math.min(lot.start, rig.progress + look));
-      dx = ahead.x - rig.x;
-      dz = ahead.z - rig.z;
+      // On the dirt they aim the boat, not the truck: the trailer leads when backing.
+      dx = ahead.x - rig.axleX;
+      dz = ahead.z - rig.axleZ;
     }
+    const dirt = rig.progress < lot.start - 2;
     const len = Math.hypot(dx, dz) || 1;
     dx /= len;
     dz /= len;
@@ -273,14 +286,37 @@ export class Sim {
     desired += Math.sin(this.time * (1.6 + rig.seed) + rig.seed) * (1 - rig.skill) * 0.28;
 
     if (Math.abs(ang) > 1.02) rig.recover = Math.max(rig.recover, 0.65);
+    // Pinned on a bale or a wall: the dirt assist means the hinge never trips the
+    // recover above, so a stall is the other reason to pull forward and re-aim.
+    // Progress, not speed, is the test: a rig grinding along a wall still shows speed.
+    if (rig.progress > rig.stuckMark + 1.5 || rig.recover > 0 || this.time < 4) {
+      rig.stuck = 0;
+      rig.stuckMark = rig.progress;
+    } else rig.stuck += dt;
+    if (rig.stuck > 1.1) {
+      rig.stuck = 0;
+      rig.recover = 0.9;
+    }
+    // Spun around on the dirt (a shove, a bad recover): drive forward and swing the
+    // nose toward the course until the boat points down the track again.
+    const lost = dirt && Math.abs(wrapAngle(desired - rig.trailerYaw)) > 1.3;
+    if (lost) rig.recover = Math.max(rig.recover, 0.3);
     if (rig.recover > 0) {
       rig.recover -= dt;
-      desired = rig.trailerYaw;
+      if (!lost) desired = rig.trailerYaw;
     }
 
-    const err = wrapAngle(desired - rig.yaw);
     const reverse = rig.speed >= 0 ? 1 : -1;
-    let steer = clamp(err * 1.7 * reverse, -1, 1);
+    let err: number;
+    let steer: number;
+    if (dirt && rig.recover <= 0) {
+      // Steer the boat's heading. With the dirt assist this is the same hands a player uses.
+      err = wrapAngle(desired - rig.trailerYaw);
+      steer = clamp(-err * 2.5, -1, 1);
+    } else {
+      err = wrapAngle(desired - rig.yaw);
+      steer = clamp(err * 1.7 * reverse, -1, 1);
+    }
 
     // Nudge off a rig that's ahead and close.
     for (const other of this.rigs) {
@@ -300,6 +336,13 @@ export class Sim {
     let throttle = -0.86 - rig.skill * 0.14;
     const corner = Math.min(1, Math.abs(err) / 0.7);
     throttle += corner * 0.45;
+    if (dirt) {
+      // Brake for the bend that is coming, not only the one they are already in.
+      const a = this.track.sample(rig.progress + 6);
+      const b = this.track.sample(Math.min(lot.start, rig.progress + 24));
+      const bend = Math.abs(wrapAngle(Math.atan2(b.dx, b.dz) - Math.atan2(a.dx, a.dz)));
+      throttle += clamp(bend * 0.9, 0, 0.55) * (1.15 - rig.nerve * 0.3);
+    }
     if (rig.recover > 0) throttle = 1;
     if (remain < 28) {
       const aim = Math.abs(wrapAngle(rig.trailerYaw - Math.atan2(dx, dz)));
@@ -384,19 +427,36 @@ export class Sim {
         const prevJack = wrapAngle(rig.holdTruck - rig.holdYaw);
         const kinJack = wrapAngle(rig.yaw - rig.trailerYaw);
         const steer = Math.min(1, Math.abs(rig.steerCmd));
-        const maxRate = inLot ? 0.22 + steer * 1.05 : 0.04 + steer * 0.7;
         const delta = wrapAngle(kinJack - prevJack);
-        const jack = prevJack + clamp(delta, -maxRate * dt, maxRate * dt);
-        rig.trailerYaw = wrapAngle(rig.yaw - jack);
+        if (inLot) {
+          // The lot keeps the raw hinge: it walks out and folds if you let it.
+          const maxRate = 0.22 + steer * 1.05;
+          const jack = prevJack + clamp(delta, -maxRate * dt, maxRate * dt);
+          rig.trailerYaw = wrapAngle(rig.yaw - jack);
+        } else {
+          // The dirt gets trailer assist. Steering still swings the boat off the ball,
+          // but the bend is capped short of a fold, and easing off the wheel lets the
+          // truck swing in behind the boat. The boat keeps the heading you gave it.
+          const maxRate = DIRT_JACK_BASE + steer * DIRT_JACK_STEER;
+          let jack = prevJack + clamp(delta, -maxRate * dt, maxRate * dt);
+          jack = clamp(jack, -DIRT_JACK_CAP, DIRT_JACK_CAP);
+          const follow = DIRT_FOLLOW * (1 - steer) * clamp(Math.abs(rig.speed) / 6, 0.4, 1.4);
+          const ease = jack * (1 - Math.exp(-follow * dt));
+          jack -= ease;
+          rig.yaw = wrapAngle(rig.yaw - ease);
+          rig.trailerYaw = wrapAngle(rig.yaw - jack);
+        }
       } else if (rig.speed > 0.2) {
         const err = wrapAngle(rig.yaw - rig.trailerYaw);
         const pull = Math.max(1.6, st.stability);
         rig.trailerYaw = wrapAngle(rig.trailerYaw + clamp(err, -pull * dt, pull * dt));
       }
+      const hx = rig.x + Math.sin(rig.yaw) * HITCH;
+      const hz = rig.z + Math.cos(rig.yaw) * HITCH;
       const tfx = -Math.sin(rig.trailerYaw);
       const tfz = -Math.cos(rig.trailerYaw);
-      rig.axleX = hitchX - tfx * TONGUE;
-      rig.axleZ = hitchZ - tfz * TONGUE;
+      rig.axleX = hx - tfx * TONGUE;
+      rig.axleZ = hz - tfz * TONGUE;
     }
     rig.jack = wrapAngle(rig.yaw - rig.trailerYaw);
   }
@@ -429,7 +489,8 @@ export class Sim {
     rig.speed *= 0.9;
     if (impact > 3.2 && rig.hitCd <= 0) {
       const st = statsFor(rig.engine, rig.turn, rig.boat);
-      rig.damage = Math.min(100, rig.damage + impact * 0.85 * st.fragility);
+      const soft = rig.progress < this.track.lot.start - 3 ? DIRT_WALL_DAMAGE : 1;
+      rig.damage = Math.min(100, rig.damage + impact * 0.85 * st.fragility * soft);
       rig.hitCd = 0.22;
       this.events.hits += 1;
     }
@@ -505,7 +566,7 @@ export class Sim {
         if (a.rig === b.rig) continue;
         let dx = b.x - a.x;
         let dz = b.z - a.z;
-        let d = Math.hypot(dx, dz);
+        const d = Math.hypot(dx, dz);
         const min = a.r + b.r;
         if (d >= min || d < 1e-4) continue;
         const pen = (min - d) / 2;
@@ -519,7 +580,9 @@ export class Sim {
         a.z -= dz * pen;
         b.x += dx * pen;
         b.z += dz * pen;
-        const rel = Math.abs(a.rig.speed) + Math.abs(b.rig.speed);
+        // Closing speed, not the sum of both speedometers: two rigs side by side at
+        // full reverse are not crashing into each other.
+        const rel = Math.hypot(a.rig.vx - b.rig.vx, a.rig.vz - b.rig.vz);
         if (rel > 8 && a.rig.hitCd <= 0 && b.rig.hitCd <= 0) {
           const bump = rel * 0.22;
           a.rig.damage = Math.min(100, a.rig.damage + bump * statsFor(a.rig.engine, a.rig.turn, a.rig.boat).fragility);

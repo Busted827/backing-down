@@ -19,15 +19,34 @@ function texOf(c: HTMLCanvasElement) {
 }
 
 export function makeGrass() {
+  // Seeded scatter, not a stride pattern: a stride tiles into stripes at the dirt camera's height.
   const { c, g } = canvas(256);
-  g.fillStyle = "#214a30";
+  let seed = 9091;
+  const rnd = () => {
+    seed = (seed * 16807) % 2147483647;
+    return seed / 2147483647;
+  };
+  g.fillStyle = "#4a7247";
   g.fillRect(0, 0, 256, 256);
-  for (let i = 0; i < 2200; i++) {
-    const x = (i * 97) % 256;
-    const y = (i * 53) % 256;
-    const blade = i % 5;
-    g.fillStyle = blade === 0 ? "#163824" : blade === 1 ? "#2f6a40" : blade === 2 ? "#3c7d4c" : "#1c5332";
-    g.fillRect(x, y, 2, 3 + (i % 4));
+  const tufts = ["#41683f", "#52804d", "#5b8b54", "#3a5e3a", "#66945c"];
+  for (let i = 0; i < 260; i++) {
+    g.globalAlpha = 0.18 + rnd() * 0.22;
+    g.fillStyle = tufts[Math.floor(rnd() * tufts.length)];
+    const x = rnd() * 256;
+    const y = rnd() * 256;
+    const r = 6 + rnd() * 22;
+    for (const ox of [-256, 0, 256]) {
+      for (const oy of [-256, 0, 256]) {
+        g.beginPath();
+        g.arc(x + ox, y + oy, r, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+  }
+  g.globalAlpha = 1;
+  for (let i = 0; i < 2600; i++) {
+    g.fillStyle = tufts[Math.floor(rnd() * tufts.length)];
+    g.fillRect(rnd() * 256, rnd() * 256, 1 + rnd() * 2, 2 + rnd() * 3);
   }
   return texOf(c);
 }
