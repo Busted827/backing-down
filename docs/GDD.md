@@ -315,18 +315,35 @@ The policy is different in reverse and in forward. This is the part that kept ge
 The jack angle from the start of the step is remembered. The kinematic solve proposes a new jack. The change is clamped.
 
 ```
-course:  max |dJack/dt| = 0.04 + |steer| * 0.70   rad/s
 lot:     max |dJack/dt| = 0.22 + |steer| * 1.05   rad/s
 newJack  = prevJack + clamp(kinJack - prevJack, -max*dt, +max*dt)
 trailerYaw = truckYaw - newJack
 ```
 
+**The dirt gets real hitch physics plus a stability assist. The lot does not.** (Constants `DIRT_*` and `steadyJack()` in `sim.ts`.)
+
+Playtest history: the hold-an-angle dirt was far too hard to race. A first assist that rate-limited the bend and swung the truck in behind the boat was manageable, but "the trailer physics are really bad in the racing part": the truck spun on the spot and rotated by itself. The dirt now runs actual vehicle kinematics:
+
+```
+truck (bicycle model):
+  lock     = turnRate * 0.26 / (1 + |speed| * 0.06)      less lock at speed
+  wheel   -> steer * lock at 2.6 rad/s                    the wheels turn, they don't snap
+  yawRate  = speed * tan(wheel) / 3.0                     no turning in place
+trailer:
+  the tongue is a rigid rod (step 3 above): that is the exact hinge, and in reverse it is unstable
+assist, reversing on the dirt only:
+  target = steadyJack(tan(wheel) / 3.0)                   bend this wheel would settle at towing forward
+  k      = 1 - exp(-1.5 * |speed| / TONGUE * dt)
+  jack   = clamp(kinJack + (target - kinJack) * k, ±1.05)
+```
+
 What this means with hands on the wheel:
 
-- You steer, the truck rotates, the hitch walks, the boat bends. Full lock on the dirt adds about 0.74 rad/s of jack (~42° per second) if the hinge wants to move that fast.
-- You center the wheel and keep backing. The angle you just set almost stays. Drift is only 0.04 rad/s on the dirt (~2° per second). This is the turn. A spring back to zero makes the turn impossible, and that spring was removed on purpose.
-- In the lot the same centered reverse still walks the angle out at 0.22 rad/s, and full lock can add about 1.27 rad/s. The lot is where a sloppy bend becomes a fold.
-- Counter-steer moves the jack the other way, at the same cap. You steer the hinge. The game does not steer it for you.
+- Hold the wheel and the boat swings off the ball toward the angle that arc needs (about 0.5–0.6 rad at racing speed, more when slow), then holds it through the corner. You see the pivot.
+- Center the wheel and the boat comes back in line behind the truck as you keep backing, and the rig carries on in the heading the turn left it.
+- `DIRT_ASSIST` is the knob. 1.0 is the raw unstable hinge; 1.5 is the current setting; higher is calmer.
+- The bend cannot pass 1.05 rad on the dirt, so the hinge cannot fold the boat there. Walls and bales on the dirt do half damage (`DIRT_WALL_DAMAGE`).
+- In the lot none of this applies: arcade truck steering, and a centered reverse still walks the angle out at 0.22 rad/s, full lock adds about 1.27 rad/s, and nothing straightens it but W. The lot is where a sloppy bend becomes a fold.
 
 **While pulling forward (`speed > 0.2`): the trailer comes home.**
 
@@ -349,8 +366,10 @@ These were built, played, and thrown out. Do not put them back because a graph l
 | Strong course damper, exponential pull toward truck yaw, rate ~7.8 | Boat followed the truck and straightened the moment you eased off | Too easy. The boat barely looked like a trailer. |
 | Same idea, rate ~3.3, damage brought back | Still a spring toward center, just weaker | Still did not function like a trailer. Turns would not hold. |
 | Rate-limit world yaw only | Truck could spin away from a frozen trailer, so the jack number grew even when the boat was nailed to the world | Measured like a swing. Drove like the trailer was stuck in the mud. |
+| Dirt follow-assist: rate-limited bend, truck auto-swung in behind the boat off the wheel | Manageable, but the truck rotated by itself and turned on the spot | "The trailer physics are really bad in the racing part." Replaced by the bicycle model and steady-state assist. |
+| Hold-an-angle on the dirt, no assist (0.04 + 0.70 rad/s) | The bend stayed wherever you left it, on the dirt as well as the lot | Way too hard to race. A simple steer-the-boat test driver hit a wall and stalled on the first Parish bend at 47% hull. With dirt assist the same driver clears the dirt under 0.5 rad of bend. |
 
-The current rule is the one that survived play: **backing holds an angle, steering changes it, forward erases it, the lot is less forgiving than the dirt.**
+The current rule: **on the dirt, steering bends the boat and letting go lines the truck up behind it; in the lot, backing holds an angle, steering changes it, and only forward erases it.**
 
 ### 11.5 Folding and damage from the hinge
 
@@ -359,7 +378,7 @@ Jack is in radians. Damage is 0–100.
 - `|jack| > 1.2` (~69°): damage ticks at `(amount over 1.2) * 26 * fragility` per second, and speed is bled with `exp(-2.2 * dt)`.
 - `|jack| > 1.55` (~89°) and the jack cooldown is ready: a slam. +9 damage times fragility, speed multiplied by 0.4, cooldown 0.85 s. Counts as a hit and a jack event (camera shake, audio).
 
-A normal dirt corner should live under 1.2 if you set the angle and then drive it. Holding full lock until the boat is sideways is how you buy a slam. The lot's higher jack rate means the same bad habit arrives at 1.55 sooner.
+On the dirt the bend is capped at 1.05, so the hinge itself never damages the boat there. In the lot, holding full lock until the boat is sideways is how you buy a slam.
 
 100 damage does not stop the truck. It stops the launch.
 
@@ -473,13 +492,14 @@ The point of the shot: you can see all four rigs, the rails, and the water at on
 
 Earlier the dirt camera sat too close and too dead-above the roof (about 22 m up, almost on the truck). That hid the course.
 
-Current dirt camera, in truck space:
+The 44 m roof camera in truck space was still too close and too overhead, and it spun with the truck every time the rig swung. Current dirt camera (`DIRT_CAM` in `render.ts`), in **course** space:
 
-- Height 44 m.
-- 12 m to the truck's right.
-- 2 m toward the nose.
-- Look target 16 m back along the backing direction, 0.2 m off the ground. You see where you are going, which is behind the trailer.
-- Field of view 46°.
+- Framed on the course direction 10 m ahead of the rig, smoothed, so it does not spin when the truck or boat swings.
+- Centered on the middle of the rig (truck and trailer axle).
+- Height 54 m, 30 m back up the course, 20 m off to one side.
+- Look target 16 m down the course from the rig, 0.2 m off the ground. You see where you are going, which is past the boat.
+- Field of view 50°.
+- That gives an oblique, three-quarter view of the dirt, the same kind of shot as the lot corner camera, which is what makes the two halves read as one game.
 - Follow ease is faster than the lot ease (`exp(-4 dt)` vs `exp(-2.4 dt)`).
 
 If someone asks to drop this camera back onto the roof, the dirt will look like a prototype again. Do not do it for "intensity." Intensity is the lot.
@@ -490,11 +510,18 @@ Each AI rig gets throttle and steer from `ai()`, then the same integrator as the
 
 ### 13.1 On the dirt
 
-Lookahead is `12 + skill * 6` meters, clamped so they are not aiming into the lot early. Desired heading is the heading toward that point, plus a sine wander of `(1 - skill) * 0.28` radians so June Bug hunts and Ramp Rat does not.
+Lookahead is `12 + skill * 6` meters, clamped so they are not aiming into the lot early. Desired heading is the heading from the **trailer axle** toward that point, plus a sine wander of `(1 - skill) * 0.28` radians so June Bug hunts and Ramp Rat does not.
 
-Steer is `clamp(headingError * 1.7 * reverseSign, -1, 1)`.
+On the dirt they steer the boat, the way the assist expects a player to: `steer = clamp(-boatHeadingError * 2.5, -1, 1)`, where the error is against `trailerYaw`.
 
-Throttle wants to be `-0.86 - skill * 0.14` (backing, faster if skilled). Big heading error lifts the throttle toward zero so they do not enter a corner at full reverse. If `|jack| > 1.02` they set a recover timer. While recovering, desired heading becomes the trailer heading and throttle goes to +1. They pull forward, like a person who felt the fold.
+Throttle wants to be `-0.86 - skill * 0.14` (backing, faster if skilled). Big heading error lifts the throttle toward zero, and so does the bend 6 to 24 m ahead, so they brake before a corner instead of in it. Low nerve brakes harder.
+
+They pull forward (throttle +1) in three cases:
+
+- `|jack| > 1.02` in the lot: they felt a fold. Desired heading becomes the trailer heading. (On the dirt a big bend is capped short of a fold, so it is a turn, not a reason to bail.)
+- No progress for 1.1 s after the first 4 s: pinned on a wall, a bale, or a truck. On the dirt they swing the nose while pulling so the boat will back toward the course, not into the same wall.
+- While still rolling forward from a pull they hold the wheel straight; reverse steering at positive speed turns the wrong way.
+- The boat points more than 1.3 rad away from the course: spun around. They drive forward and swing the nose toward the course until the boat lines up again.
 
 They also steer away from a rig that is ahead of them and within 7 m.
 
@@ -528,7 +555,7 @@ Off-track is not a wall. It is drag. You can drop a wheel off the curb and pay f
 
 ### 14.2 Trucks hitting trucks
 
-After the wall pass, rigs separate as circles. If the relative speed is over 8 and both cooldowns are clear, both take `rel * 0.22 * fragility` damage, both slow to 92%, cooldown 0.2 s. The lot is where this matters. On the dirt you mostly hit hay.
+After the wall pass, rigs separate as circles. If the closing speed (difference of the two velocity vectors, not the sum of both speedometers) is over 8 and both cooldowns are clear, both take `rel * 0.22 * fragility` damage, both slow to 92%, cooldown 0.2 s. The lot is where this matters. On the dirt you mostly hit hay.
 
 ## 15. Presentation
 
@@ -606,13 +633,13 @@ Display type is heavy and condensed for the clock, the place, and the track bann
 
 These are the sentences a playtester should be able to say. If they say the opposite, the tuning is wrong.
 
-On Parish Fair, backing, wheel centered after a gentle steer:
+On Parish Fair, backing, steer then let go:
 
-> "The boat stayed bent and I made the corner."
+> "The boat swung out, held it through the bend, and came back in line when I straightened the wheel."
 
 On Parish Fair, holding the wheel:
 
-> "It keeps swinging until I straighten the wheel or pull forward."
+> "The boat leans out off the ball the whole time I hold the turn."
 
 On the first time they reach the asphalt:
 
@@ -628,8 +655,9 @@ On the garage:
 
 Sentences that mean the build is wrong:
 
-> "It straightens itself when I back up."
+> "It straightens itself when I back up in the lot."
 > "The boat is glued to the truck."
+> "I can't make a dirt corner backwards."
 > "I jackknife before I finish the first turn, every time."
 > "I can't tell which way I'm backing."
 > "The dirt looks like a diagram and the lot looks like a game."
@@ -682,7 +710,7 @@ A new rival needs a name, a color, a boat, a skill, and a nerve. Four rigs is th
 
 These are not licensed to be changed in a drive-by.
 
-1. **Is 0.74 rad/s of jack at full lock on the dirt the right speed?** Playtesters who have just come off the squirrely build will say it is too slow. Playtesters who have just come off the spring-to-center build will say the boat finally works. Believe the second group unless they also cannot make a Parish corner.
+1. **Is the dirt assist the right strength?** The knobs are the `DIRT_*` constants in `sim.ts`. If the dirt is too easy or too stiff, move `DIRT_ASSIST` first (toward 1.0 is wilder), then the cap. Do not touch the lot to fix the dirt.
 2. **Should a crooked trailer push the truck?** Right now the truck goes where its heading says, and the trailer follows on a rod. A real tongue shoves the tow vehicle when the angle is large. Adding that force will change every corner. If it is added, it is a shove at high jack only, and it is tested on Parish before it is tested in the lot.
 3. **Does the season want a fifth heat that is only the lot?** Not yet. The dirt is the wind-up. A lot-only heat is a different game.
 4. **Local two-player?** The input path can take two action structs. The camera cannot. The lot camera is shared, which is almost a party view, but the dirt camera is per truck. Split dirt cameras are a feature, not a weekend.
@@ -704,7 +732,7 @@ These are not licensed to be changed in a drive-by.
 
 The prototype is done enough to race when all of these are true in one sitting:
 
-1. Parish can be backed through without the trailer centering itself and without a jackknife on the first bend.
+1. Parish can be backed through without a jackknife on the first bend, and the lot still holds whatever bend you leave in it.
 2. The dirt camera shows curbs, poles, the grandstand, and the boat, not the roof.
 3. Crossing into the asphalt locks the high corner camera and it stays there.
 4. Two trucks can arrive crooked, and only a straight, committed boat splashes.
