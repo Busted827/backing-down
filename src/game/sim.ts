@@ -7,10 +7,13 @@ export const HITCH = 1.9;
 export const TONGUE = 2.65;
 
 /** Dirt trailer assist. The lot does not get any of this. */
-export const DIRT_JACK_BASE = 0.1; // rad/s the bend can drift with the wheel centered
+export const DIRT_JACK_BASE = 0.12; // rad/s the bend can drift with the wheel centered
 export const DIRT_JACK_STEER = 1.0; // extra rad/s of bend at full lock
-export const DIRT_JACK_CAP = 0.95; // ~54°: the dirt never folds the boat
-export const DIRT_FOLLOW = 1.7; // 1/s: how fast the truck swings in behind the boat off the wheel
+export const DIRT_JACK_CAP = 1.05; // ~60°: the dirt never folds the boat
+export const DIRT_FOLLOW = 1.3; // 1/s: how fast your truck swings in behind the boat off the wheel
+// Rivals straighten up quicker. This stands in for steady hands; their steering is a
+// simple controller and it over-swings the boat at the player's setting.
+export const DIRT_FOLLOW_AI = 1.7;
 export const DIRT_WALL_DAMAGE = 0.5; // dirt walls and bales hurt half as much as the lot
 
 export type Stats = {
@@ -285,7 +288,8 @@ export class Sim {
     let desired = Math.atan2(dx, dz);
     desired += Math.sin(this.time * (1.6 + rig.seed) + rig.seed) * (1 - rig.skill) * 0.28;
 
-    if (Math.abs(ang) > 1.02) rig.recover = Math.max(rig.recover, 0.65);
+    // On the dirt the bend is capped short of a fold, so a big bend is a turn, not a fold.
+    if (!dirt && Math.abs(ang) > 1.02) rig.recover = Math.max(rig.recover, 0.65);
     // Pinned on a bale or a wall: the dirt assist means the hinge never trips the
     // recover above, so a stall is the other reason to pull forward and re-aim.
     // Progress, not speed, is the test: a rig grinding along a wall still shows speed.
@@ -303,7 +307,9 @@ export class Sim {
     if (lost) rig.recover = Math.max(rig.recover, 0.3);
     if (rig.recover > 0) {
       rig.recover -= dt;
-      if (!lost) desired = rig.trailerYaw;
+      // In the lot, straighten. On the dirt, swing the nose so the boat will back
+      // toward the course when they reverse again, not back into the same wall.
+      if (!lost && !dirt) desired = rig.trailerYaw;
     }
 
     const reverse = rig.speed >= 0 ? 1 : -1;
@@ -312,7 +318,8 @@ export class Sim {
     if (dirt && rig.recover <= 0) {
       // Steer the boat's heading. With the dirt assist this is the same hands a player uses.
       err = wrapAngle(desired - rig.trailerYaw);
-      steer = clamp(-err * 2.5, -1, 1);
+      // Still rolling forward from a pull: reverse steering would turn the wrong way.
+      steer = rig.speed > 0.2 ? 0 : clamp(-err * 2.5, -1, 1);
     } else {
       err = wrapAngle(desired - rig.yaw);
       steer = clamp(err * 1.7 * reverse, -1, 1);
@@ -440,7 +447,7 @@ export class Sim {
           const maxRate = DIRT_JACK_BASE + steer * DIRT_JACK_STEER;
           let jack = prevJack + clamp(delta, -maxRate * dt, maxRate * dt);
           jack = clamp(jack, -DIRT_JACK_CAP, DIRT_JACK_CAP);
-          const follow = DIRT_FOLLOW * (1 - steer) * clamp(Math.abs(rig.speed) / 6, 0.4, 1.4);
+          const follow = (rig.isPlayer ? DIRT_FOLLOW : DIRT_FOLLOW_AI) * (1 - steer) * clamp(Math.abs(rig.speed) / 6, 0.4, 1.4);
           const ease = jack * (1 - Math.exp(-follow * dt));
           jack -= ease;
           rig.yaw = wrapAngle(rig.yaw - ease);

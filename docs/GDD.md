@@ -323,18 +323,20 @@ trailerYaw = truckYaw - newJack
 **The dirt gets trailer assist. The lot does not.** Playtest feedback after the hold-an-angle build: the lot was right, the dirt was far too hard to race. The dirt now runs the same rate limit with three changes (constants `DIRT_*` in `sim.ts`):
 
 ```
-dirt:    max |dJack/dt| = 0.10 + |steer| * 1.00   rad/s
-         |jack| capped at 0.95 rad (~54°), under the 1.2 fold line
-follow   = 1.7 * (1 - |steer|) * clamp(|speed| / 6, 0.4, 1.4)   1/s
+dirt:    max |dJack/dt| = 0.12 + |steer| * 1.00   rad/s
+         |jack| capped at 1.05 rad (~60°), under the 1.2 fold line
+follow   = F * (1 - |steer|) * clamp(|speed| / 6, 0.4, 1.4)   1/s
+         F = 1.3 for you, 1.7 for rivals (steadier hands)
 ease     = jack * (1 - exp(-follow * dt))
 jack    -= ease;  truckYaw -= ease        (trailerYaw does not move)
 ```
 
 What this means with hands on the wheel:
 
-- You steer, the truck rotates, the hitch walks, the boat bends. Full lock on the dirt adds about 1.1 rad/s of jack.
+- You steer, the truck rotates, the hitch walks, the boat bends. Full lock on the dirt adds about 1.1 rad/s of jack, up to 60°. The boat visibly swings off the ball through every dirt corner.
+- Playtest note: a first pass (cap 0.95, follow 1.7) was manageable but the trailer barely looked like it pivoted. 1.05 / 1.3 keeps the bend on screen longer.
 - You ease off the wheel and keep backing. **The truck swings in behind the boat. The boat keeps the heading you gave it.** That is what a good driver does with their hands, and the dirt does it for you. It is not the rejected spring: that spring pulled the trailer back toward the truck and erased the turn. This one moves the truck and leaves the turn in the boat.
-- The bend cannot pass 0.95 rad on the dirt, so the hinge cannot fold the boat there. Walls and bales on the dirt also do half damage (`DIRT_WALL_DAMAGE`).
+- The bend cannot pass 1.05 rad on the dirt, so the hinge cannot fold the boat there. Walls and bales on the dirt also do half damage (`DIRT_WALL_DAMAGE`).
 - In the lot none of this applies. A centered reverse still walks the angle out at 0.22 rad/s, full lock adds about 1.27 rad/s, and nothing swings the truck in for you. The lot is where a sloppy bend becomes a fold.
 - Counter-steer moves the jack the other way. You steer the hinge. On the dirt the game straightens the truck behind it when you let go.
 
@@ -370,7 +372,7 @@ Jack is in radians. Damage is 0–100.
 - `|jack| > 1.2` (~69°): damage ticks at `(amount over 1.2) * 26 * fragility` per second, and speed is bled with `exp(-2.2 * dt)`.
 - `|jack| > 1.55` (~89°) and the jack cooldown is ready: a slam. +9 damage times fragility, speed multiplied by 0.4, cooldown 0.85 s. Counts as a hit and a jack event (camera shake, audio).
 
-On the dirt the bend is capped at 0.95, so the hinge itself never damages the boat there. In the lot, holding full lock until the boat is sideways is how you buy a slam.
+On the dirt the bend is capped at 1.05, so the hinge itself never damages the boat there. In the lot, holding full lock until the boat is sideways is how you buy a slam.
 
 100 damage does not stop the truck. It stops the launch.
 
@@ -510,8 +512,9 @@ Throttle wants to be `-0.86 - skill * 0.14` (backing, faster if skilled). Big he
 
 They pull forward (throttle +1) in three cases:
 
-- `|jack| > 1.02`: they felt a fold. Desired heading becomes the trailer heading.
-- No progress for 1.1 s after the first 4 s: pinned on a wall, a bale, or a truck.
+- `|jack| > 1.02` in the lot: they felt a fold. Desired heading becomes the trailer heading. (On the dirt a big bend is capped short of a fold, so it is a turn, not a reason to bail.)
+- No progress for 1.1 s after the first 4 s: pinned on a wall, a bale, or a truck. On the dirt they swing the nose while pulling so the boat will back toward the course, not into the same wall.
+- While still rolling forward from a pull they hold the wheel straight; reverse steering at positive speed turns the wrong way.
 - The boat points more than 1.3 rad away from the course: spun around. They drive forward and swing the nose toward the course until the boat lines up again.
 
 They also steer away from a rig that is ahead of them and within 7 m.
